@@ -176,7 +176,8 @@ trait Implicits {
   }
 
   /** The result of an implicit search
-   *  @param  tree    The tree representing the implicit
+    *
+    *  @param  tree    The tree representing the implicit
    *  @param  subst   A substituter that represents the undetermined type parameters
    *                  that were instantiated by the winning implicit.
    *  @param undetparams undetermined type parameters
@@ -206,7 +207,8 @@ trait Implicits {
   }
 
   /** A class that records an available implicit
-   *  @param   name   The name of the implicit
+    *
+    *  @param   name   The name of the implicit
    *  @param   pre    The prefix type of the implicit
    *  @param   sym    The symbol of the implicit
    */
@@ -338,7 +340,8 @@ trait Implicits {
   }
 
   /** A class that sets up an implicit search. For more info, see comments for `inferImplicit`.
-   *  @param tree             The tree for which the implicit needs to be inserted.
+    *
+    *  @param tree             The tree for which the implicit needs to be inserted.
    *  @param pt               The original expected type of the implicit.
    *  @param isView           We are looking for a view
    *  @param context0         The context used for the implicit search
@@ -378,18 +381,76 @@ trait Implicits {
     /** Is implicit info `info1` better than implicit info `info2`?
      */
     def improves(info1: ImplicitInfo, info2: ImplicitInfo) = {
+      println (s" -=- checking if $info1 improves $info2")
       if (Statistics.canEnable) Statistics.incCounter(improvesCount)
       (info2 == NoImplicitInfo) ||
       (info1 != NoImplicitInfo) && {
+        println (s" -=- ${info1.tpe} vs ${info2.tpe}")
+        val variance1 = info1.sym.variance // varianceInType(info1.tpe)(info1.sym)
+        val variance2 = info2.sym.variance // varianceInType(info2.tpe)(info2.sym)
+        println (s" -=- ${variance1.flags}, ${variance2.flags}")
+        println(s" -==- ${info1.sym.isContravariant}, ${info2.sym.isContravariant}")
+
+        val flip = new TypeMap {
+//          override def mapOverArgs(args: List[Type], tparams: List[Symbol]): List[Type] = //(
+//            if (trackVariance)
+//              map2Conserve(args, tparams) { (arg, tparam) =>
+//                if (tparam.variance.isContravariant) {
+//
+//                }
+//                this(arg)
+//              }
+//            else
+//              args mapConserve this
+//            )
+                    def apply(tp: Type) = {
+                      tp match {
+                        case tr@TypeRef(pre, sym, args) => // if variance.isCovariant => //&& sym.isContravariant =>
+                          val pre1 = this(pre)
+
+                          println(args)
+                          val args1 = map2Conserve(args, sym.typeParams) { (arg, tparam) =>
+                            println(tparam)
+                            if (tparam.isContravariant) {
+                              println(s"contr $tparam")
+                              this (arg)
+                            } else {
+                              this (arg)
+                            }
+                          }
+
+                          if ((pre1 eq pre) && (args1 eq args)) tp
+                          else copyTypeRef(tp, pre1, tr.coevolveSym(pre1), args1)
+//                        // case t: TypeBounds => t
+                        case _ => mapOver(tp)
+                      }
+                    }
+//
+//          @inline final def contraToCovariance[T](body: => T): T = {
+//            if (variance.isContravariant) {
+//              variance = variance.flip
+//            }
+//            val ret = body
+//            if (variance.isContravariant) {
+//              variance = variance.flip
+//            }
+//            ret
+//          }
+        }
+
+        val t1 = flip(info1.tpe)
+        val t2 = flip(info2.tpe)
+
+
         if (info1.sym.isStatic && info2.sym.isStatic) {
           improvesCache get ((info1, info2)) match {
             case Some(b) => if (Statistics.canEnable) Statistics.incCounter(improvesCachedCount); b
             case None =>
-              val result = isStrictlyMoreSpecific(info1.tpe, info2.tpe, info1.sym, info2.sym)
+              val result = isStrictlyMoreSpecific(t1, t2, info1.sym, info2.sym)
               improvesCache((info1, info2)) = result
               result
           }
-        } else isStrictlyMoreSpecific(info1.tpe, info2.tpe, info1.sym, info2.sym)
+        } else isStrictlyMoreSpecific(t1, t2, info1.sym, info2.sym)
       }
     }
     def isPlausiblyCompatible(tp: Type, pt: Type) = checkCompatibility(fast = true, tp, pt)
@@ -914,8 +975,8 @@ trait Implicits {
       @tailrec private def rankImplicits(pending: Infos, acc: List[(SearchResult, ImplicitInfo)]): List[(SearchResult, ImplicitInfo)] = pending match {
         case Nil                          => acc
         case firstPending :: otherPending =>
-          def firstPendingImproves(alt: ImplicitInfo) =
-            firstPending == alt || (
+          def firstPendingImproves(alt: ImplicitInfo) = {
+            val x = firstPending == alt || (
               try improves(firstPending, alt)
               catch {
                 case e: CyclicReference =>
@@ -923,8 +984,12 @@ trait Implicits {
                   true
               }
             )
+            println (s" -=- improves = $x")
+            x
+          }
 
           val typedFirstPending = typedImplicit(firstPending, ptChecked = true, isLocalToCallsite)
+          println (s" -- looking at $firstPending, $typedFirstPending")
 
           // Pass the errors to `DivergentImplicitRecovery` so that it can note
           // the first `DivergentImplicitTypeError` that is being propagated
@@ -952,6 +1017,7 @@ trait Implicits {
         // After calling rankImplicits, the least frequent matching one is first and
         // earlier elems may improve on later ones, but not the other way.
         // So if there is any element not improved upon by the first it is an error.
+        println(s" - ranking implicits: $eligible")
         rankImplicits(eligible, Nil) match {
           case Nil            => ()
           case (chosenResult, chosenInfo) :: rest =>
@@ -965,6 +1031,7 @@ trait Implicits {
             }
         }
 
+        println(s" - best is $best")
         if (best.isFailure) {
           // If there is no winner, and we witnessed and recorded a divergence error,
           // our recovery attempt has failed, so we must now issue it.
@@ -1019,7 +1086,8 @@ trait Implicits {
      *    - the parts of its base types
      *    - for alias types and abstract types, we take instead the parts
      *    - of their upper bounds.
-     *  @return For those parts that refer to classes with companion objects that
+      *
+      *  @return For those parts that refer to classes with companion objects that
      *  can be accessed with unambiguous stable prefixes that are not existentially
      *  bound, the implicits infos which are members of these companion objects.
      */
@@ -1368,9 +1436,9 @@ trait Implicits {
       val stats = Statistics.canEnable
       val failstart = if (stats) Statistics.startTimer(inscopeFailNanos) else null
       val succstart = if (stats) Statistics.startTimer(inscopeSucceedNanos) else null
-
+println(s"looking fpr implicit: $context")
       var result = searchImplicit(context.implicitss, isLocalToCallsite = true)
-
+println(s"result was: $result")
       if (stats) {
         if (result.isFailure) Statistics.stopTimer(inscopeFailNanos, failstart)
         else {
